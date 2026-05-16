@@ -1,4 +1,4 @@
-// Command wtdebug is a single-page WebTransport debug/test tool.
+// Command wtscan is a single-page WebTransport debug/inspect tool.
 //
 // It runs two listeners:
 //
