@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Stop anything bound to wtscan's ports, rebuild, then run in the foreground.
+# Ctrl-C exits cleanly. Background with `wtscan/bin/start &` if you want.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$REPO"
+
+"$SCRIPT_DIR/stop" || true
+"$SCRIPT_DIR/build"
+exec ./wtscan/bin/wtscan
