@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Build the wtscan debug binary to ./wtscan/bin/wtscan (gitignored).
+set -euo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO"
+
+go build -o ./wtscan/bin/wtscan ./wtscan
+echo "built: ./wtscan/bin/wtscan"

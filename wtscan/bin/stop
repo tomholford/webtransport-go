@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Stop any running wtscan (or legacy wtdebug) process.
+# Matches by process name on purpose, so an unrelated client connection
+# to :8080 or :12345 (e.g. a leftover browser tab) isn't killed.
+set -eu
+
+pids=$(pgrep -x 'wtscan|wtdebug' 2>/dev/null | tr '\n' ' ')
+
+if [ -n "$pids" ]; then
+  # shellcheck disable=SC2086
+  kill $pids 2>/dev/null || true
+  echo "stopped pid(s): $pids"
+else
+  echo "wtscan not running"
+fi
