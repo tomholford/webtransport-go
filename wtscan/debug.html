@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>wtscan — WebTransport inspect tool</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  // Tailwind CDN: darkMode defaults to 'media' (prefers-color-scheme). Make explicit.
+  tailwind.config = { darkMode: 'media' };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+  .pill { display: inline-block; padding: 0.125rem 0.5rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; }
+  .pill-ok    { background: #d1fae5; color: #065f46; }
+  .pill-warn  { background: #fef3c7; color: #92400e; }
+  .pill-err   { background: #fee2e2; color: #991b1b; }
+  .pill-idle  { background: #e5e7eb; color: #374151; }
+  @media (prefers-color-scheme: dark) {
+    .pill-ok    { background: #064e3b; color: #6ee7b7; }
+    .pill-warn  { background: #78350f; color: #fcd34d; }
+    .pill-err   { background: #7f1d1d; color: #fca5a5; }
+    .pill-idle  { background: #334155; color: #cbd5e1; }
+  }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen dark:bg-slate-900 dark:text-slate-100">
+<div class="max-w-6xl mx-auto p-6 space-y-6">
+
+  <header class="flex items-baseline justify-between">
+    <h1 class="text-2xl font-bold">wtscan</h1>
+    <span class="text-sm text-slate-500 dark:text-slate-400">
+      WebTransport inspect tool · <span id="ua-name"></span>
+    </span>
+  </header>
+
+  <!-- Connection control -->
+  <section class="bg-white dark:bg-slate-800 rounded-lg shadow p-4 space-y-3">
+    <div class="flex items-center gap-3 flex-wrap">
+      <label class="text-sm">URL</label>
+      <input id="url-input" type="text" value="https://127.0.0.1:12345/echo"
+             class="flex-1 min-w-[20rem] border border-slate-300 dark:border-slate-600 dark:bg-slate-900 rounded px-2 py-1 text-sm" />
+      <button id="btn-connect" class="px-3 py-1 rounded bg-blue-600 text-white text-sm hover:bg-blue-700">Connect</button>
+      <button id="btn-disconnect" class="px-3 py-1 rounded bg-slate-300 dark:bg-slate-700 text-slate-700 dark:text-slate-200 text-sm hover:bg-slate-400 dark:hover:bg-slate-600" disabled>Disconnect</button>
+      <span id="status" class="pill pill-idle">idle</span>
+    </div>
+    <div class="text-xs text-slate-500 dark:text-slate-400">
+      The page will pin the server cert hash automatically (<code>serverCertificateHashes</code>) — no trust prompt.
+    </div>
+  </section>
+
+  <div class="grid md:grid-cols-2 gap-6">
+
+    <!-- Connection state -->
+    <section class="bg-white dark:bg-slate-800 rounded-lg shadow p-4 space-y-2">
+      <h2 class="font-semibold">Browser-side session</h2>
+      <dl class="grid grid-cols-[10rem_1fr] gap-y-1 text-sm">
+        <dt class="text-slate-500 dark:text-slate-400">reliability</dt>     <dd id="info-reliability">—</dd>
+        <dt class="text-slate-500 dark:text-slate-400">.ready</dt>          <dd id="info-ready">—</dd>
+        <dt class="text-slate-500 dark:text-slate-400">.closed</dt>         <dd id="info-closed">—</dd>
+        <dt class="text-slate-500 dark:text-slate-400">maxDatagramSize</dt> <dd id="info-mdgsize">—</dd>
+      </dl>
+    </section>
+
+    <!-- What the server saw -->
+    <section class="bg-white dark:bg-slate-800 rounded-lg shadow p-4 space-y-2">
+      <h2 class="font-semibold">What the server saw <span class="text-xs text-slate-500 dark:text-slate-400">(last CONNECT)</span></h2>
+      <dl class="grid grid-cols-[10rem_1fr] gap-y-1 text-sm">
+        <dt class="text-slate-500 dark:text-slate-400">:method</dt>    <dd id="info-method">—</dd>
+        <dt class="text-slate-500 dark:text-slate-400">:protocol</dt>  <dd id="info-proto">—</dd>
+        <dt class="text-slate-500 dark:text-slate-400">:path</dt>      <dd id="info-path">—</dd>
+        <dt class="text-slate-500 dark:text-slate-400">:authority</dt> <dd id="info-host">—</dd>
+        <dt class="text-slate-500 dark:text-slate-400">origin</dt>     <dd id="info-origin">—</dd>
+        <dt class="text-slate-500 dark:text-slate-400">at</dt>         <dd id="info-at">—</dd>
+      </dl>
+      <details class="text-xs text-slate-500 dark:text-slate-400">
+        <summary class="cursor-pointer">Headers</summary>
+        <pre id="info-headers" class="mt-1 bg-slate-100 dark:bg-slate-900 rounded p-2 overflow-x-auto"></pre>
+      </details>
+    </section>
+
+    <!-- getStats -->
+    <section class="bg-white dark:bg-slate-800 rounded-lg shadow p-4 space-y-2 md:col-span-2">
+      <div class="flex items-baseline justify-between">
+        <h2 class="font-semibold">Connection stats <span class="text-xs text-slate-500 dark:text-slate-400">(<code>transport.getStats()</code>, polled every 1s)</span></h2>
+        <span id="stats-note" class="text-xs text-slate-400 dark:text-slate-500"></span>
+      </div>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
+        <div class="bg-slate-50 dark:bg-slate-900 rounded p-2"><div class="text-xs text-slate-500 dark:text-slate-400">bytes sent</div><div id="s-bytesSent" class="font-semibold">—</div></div>
+        <div class="bg-slate-50 dark:bg-slate-900 rounded p-2"><div class="text-xs text-slate-500 dark:text-slate-400">bytes received</div><div id="s-bytesReceived" class="font-semibold">—</div></div>
+        <div class="bg-slate-50 dark:bg-slate-900 rounded p-2"><div class="text-xs text-slate-500 dark:text-slate-400">packets lost</div><div id="s-packetsLost" class="font-semibold">—</div></div>
+        <div class="bg-slate-50 dark:bg-slate-900 rounded p-2"><div class="text-xs text-slate-500 dark:text-slate-400">smoothed RTT</div><div id="s-rtt" class="font-semibold">—</div></div>
+      </div>
+      <canvas id="chart" class="w-full" height="80"></canvas>
+    </section>
+
+    <!-- Bidi echo test -->
+    <section class="bg-white dark:bg-slate-800 rounded-lg shadow p-4 space-y-3">
+      <h2 class="font-semibold">Bidi echo test</h2>
+      <div class="flex items-center gap-2 flex-wrap text-sm">
+        <label>bytes per stream</label>
+        <input id="bidi-size" type="number" value="65536" class="border border-slate-300 dark:border-slate-600 dark:bg-slate-900 rounded px-2 py-1 w-32" />
+        <label>parallel streams</label>
+        <input id="bidi-parallel" type="number" value="2" class="border border-slate-300 dark:border-slate-600 dark:bg-slate-900 rounded px-2 py-1 w-20" />
+        <button id="btn-bidi" class="px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700" disabled>Run</button>
+      </div>
+      <pre id="bidi-result" class="text-xs bg-slate-50 dark:bg-slate-900 rounded p-2 min-h-[3rem]"></pre>
+    </section>
+
+    <!-- Datagram test -->
+    <section class="bg-white dark:bg-slate-800 rounded-lg shadow p-4 space-y-3">
+      <h2 class="font-semibold">Datagram echo test</h2>
+      <div class="flex items-center gap-2 flex-wrap text-sm">
+        <label>count</label>
+        <input id="dg-count" type="number" value="200" class="border border-slate-300 dark:border-slate-600 dark:bg-slate-900 rounded px-2 py-1 w-20" />
+        <label>size (bytes)</label>
+        <input id="dg-size" type="number" value="200" class="border border-slate-300 dark:border-slate-600 dark:bg-slate-900 rounded px-2 py-1 w-24" />
+        <button id="btn-dg" class="px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700" disabled>Run</button>
+      </div>
+      <pre id="dg-result" class="text-xs bg-slate-50 dark:bg-slate-900 rounded p-2 min-h-[3rem]"></pre>
+    </section>
+
+  </div>
+
+  <!-- Log -->
+  <section class="bg-white dark:bg-slate-800 rounded-lg shadow p-4 space-y-2">
+    <h2 class="font-semibold">Event log</h2>
+    <pre id="log" class="text-xs bg-slate-50 dark:bg-slate-900 rounded p-2 min-h-[8rem] max-h-[20rem] overflow-y-auto"></pre>
+  </section>
+
+</div>
+
+<script>
+const CERT_HASH = %%CERTHASH%%;
+let transport = null;
+let statsTimer = null;
+let datagramReader = null;
+let chart = null;
+
+const $ = (id) => document.getElementById(id);
+const log = (msg) => {
+  const t = new Date().toISOString().split('T')[1].replace('Z','');
+  $('log').textContent += `[${t}] ${msg}\n`;
+  $('log').scrollTop = $('log').scrollHeight;
+};
+
+const darkScheme = window.matchMedia('(prefers-color-scheme: dark)');
+
+function setStatus(label, kind) {
+  const el = $('status');
+  el.textContent = label;
+  el.className = `pill pill-${kind}`;
+}
+
+function setConnectedUI(connected) {
+  $('btn-connect').disabled = connected;
+  $('btn-disconnect').disabled = !connected;
+  $('btn-bidi').disabled = !connected;
+  $('btn-dg').disabled = !connected;
+}
+
+function fmtBytes(n) {
+  if (n == null) return '—';
+  const units = ['B','KB','MB','GB'];
+  let i = 0; while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(2)} ${units[i]}`;
+}
+
+function chartColors() {
+  const dark = darkScheme.matches;
+  return {
+    text: dark ? '#cbd5e1' : '#334155',
+    grid: dark ? 'rgba(148,163,184,0.15)' : 'rgba(15,23,42,0.08)',
+  };
+}
+
+function initChart() {
+  if (chart) return;
+  const ctx = $('chart').getContext('2d');
+  const c = chartColors();
+  Chart.defaults.color = c.text;
+  Chart.defaults.borderColor = c.grid;
+  chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [
+        { label: 'smoothedRtt (ms)', data: [], borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.15)', tension: 0.2, yAxisID: 'y' },
+        { label: 'throughput out (KB/s)', data: [], borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.15)', tension: 0.2, yAxisID: 'y1' },
+      ],
+    },
+    options: {
+      animation: false,
+      scales: {
+        y:  { type: 'linear', position: 'left',  title: { display: true, text: 'RTT (ms)' }, grid: { color: c.grid } },
+        y1: { type: 'linear', position: 'right', title: { display: true, text: 'KB/s' },    grid: { drawOnChartArea: false } },
+      },
+    },
+  });
+}
+
+darkScheme.addEventListener('change', () => {
+  if (!chart) return;
+  const c = chartColors();
+  Chart.defaults.color = c.text;
+  Chart.defaults.borderColor = c.grid;
+  chart.options.scales.y.grid.color = c.grid;
+  chart.update();
+});
+
+let lastStats = null;
+let lastStatsAt = 0;
+
+async function pollStats() {
+  if (!transport) return;
+  try {
+    const stats = await transport.getStats();
+    $('s-bytesSent').textContent     = fmtBytes(stats.bytesSent);
+    $('s-bytesReceived').textContent = fmtBytes(stats.bytesReceived);
+    $('s-packetsLost').textContent   = stats.packetsLost ?? '—';
+    const rttMs = (stats.smoothedRtt ?? 0) * 1000;
+    $('s-rtt').textContent           = rttMs ? rttMs.toFixed(2) + ' ms' : '—';
+
+    const now = performance.now();
+    let kbps = 0;
+    if (lastStats && now > lastStatsAt) {
+      const dB = (stats.bytesSent ?? 0) - (lastStats.bytesSent ?? 0);
+      const dT = (now - lastStatsAt) / 1000;
+      kbps = dT > 0 ? (dB / 1024) / dT : 0;
+    }
+    lastStats = stats;
+    lastStatsAt = now;
+
+    if (chart) {
+      const t = new Date().toLocaleTimeString();
+      chart.data.labels.push(t);
+      chart.data.datasets[0].data.push(rttMs);
+      chart.data.datasets[1].data.push(kbps);
+      if (chart.data.labels.length > 60) {
+        chart.data.labels.shift();
+        chart.data.datasets[0].data.shift();
+        chart.data.datasets[1].data.shift();
+      }
+      chart.update('none');
+    }
+  } catch (e) {
+    $('stats-note').textContent = `getStats unavailable: ${e.message}`;
+  }
+}
+
+async function fetchInfo() {
+  try {
+    const r = await fetch('/info');
+    const info = await r.json();
+    $('info-method').textContent  = info.method || '—';
+    $('info-proto').textContent   = info.proto || '—';
+    $('info-path').textContent    = info.path || '—';
+    $('info-host').textContent    = info.host || '—';
+    $('info-origin').textContent  = info.origin || '—';
+    $('info-at').textContent      = info.at ? new Date(info.at).toLocaleString() : '—';
+    $('info-headers').textContent = JSON.stringify(info.headers, null, 2);
+  } catch (e) {
+    log(`/info fetch failed: ${e.message}`);
+  }
+}
+
+async function startDatagramReader() {
+  if (!transport) return;
+  const reader = transport.datagrams.readable.getReader();
+  datagramReader = reader;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      dispatchDatagram(value);
+    }
+  } catch (e) {
+    if (transport) log(`datagram reader: ${e.message}`);
+  }
+}
+
+// Datagram echo test plumbing
+let dgPending = null;
+function dispatchDatagram(bytes) {
+  if (!dgPending) return;
+  if (bytes.byteLength < 12) return;
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const seq = dv.getUint32(0);
+  const ts  = dv.getFloat64(4);
+  dgPending.received++;
+  dgPending.rtts.push(performance.now() - ts);
+}
+
+async function connect() {
+  const url = $('url-input').value;
+  log(`connecting to ${url} ...`);
+  try {
+    transport = new WebTransport(url, {
+      serverCertificateHashes: [{ algorithm: 'sha-256', value: new Uint8Array(CERT_HASH) }],
+    });
+    setStatus('connecting', 'warn');
+    $('info-ready').textContent  = 'pending';
+    $('info-closed').textContent = 'pending';
+
+    transport.closed.then(info => {
+      log(`closed: code=${info?.closeCode ?? '?'} reason=${JSON.stringify(info?.reason ?? '')}`);
+      $('info-closed').innerHTML = `<span class="pill pill-ok">resolved</span> code=${info?.closeCode ?? '?'}`;
+      teardown();
+    }).catch(err => {
+      log(`closed (error): ${err.message}`);
+      $('info-closed').innerHTML = `<span class="pill pill-err">rejected</span> ${err.message}`;
+      teardown();
+    });
+
+    await transport.ready;
+    $('info-ready').innerHTML        = `<span class="pill pill-ok">resolved</span>`;
+    $('info-reliability').textContent = transport.reliability;
+    $('info-mdgsize').textContent     = transport.datagrams?.maxDatagramSize ?? '—';
+    setStatus('connected', 'ok');
+    setConnectedUI(true);
+    log('ready resolved');
+
+    initChart();
+    startDatagramReader();
+    statsTimer = setInterval(pollStats, 1000);
+    pollStats();
+    fetchInfo();
+  } catch (e) {
+    log(`connect failed: ${e.message}`);
+    setStatus('error', 'err');
+    teardown();
+  }
+}
+
+function disconnect() {
+  if (!transport) return;
+  log('user-initiated close');
+  transport.close({ closeCode: 0, reason: 'bye' });
+}
+
+function teardown() {
+  if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+  if (datagramReader) { try { datagramReader.releaseLock(); } catch {} datagramReader = null; }
+  transport = null;
+  setConnectedUI(false);
+  if ($('status').textContent !== 'error') setStatus('idle', 'idle');
+}
+
+async function runBidiStream(idx, data) {
+  const size = data.byteLength;
+  let stream;
+  try {
+    stream = await transport.createBidirectionalStream();
+  } catch (e) {
+    throw new Error(`stream[${idx}] create: ${e.message}`);
+  }
+  const writer = stream.writable.getWriter();
+  const reader = stream.readable.getReader();
+
+  const writeAndClose = (async () => {
+    try {
+      await writer.write(data);
+      await writer.close();
+    } catch (e) {
+      throw new Error(`stream[${idx}] write: ${e.message}`);
+    }
+  })();
+
+  let received = 0;
+  try {
+    while (received < size) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      received += value.length;
+    }
+  } catch (e) {
+    throw new Error(`stream[${idx}] read at ${received}/${size}: ${e.message}`);
+  }
+  await writeAndClose;
+  if (received !== size) {
+    throw new Error(`stream[${idx}] short read: ${received}/${size}`);
+  }
+  return received;
+}
+
+async function bidiTest() {
+  const size = parseInt($('bidi-size').value, 10);
+  const parallel = parseInt($('bidi-parallel').value, 10);
+  $('bidi-result').textContent = `Running: ${parallel} parallel × ${fmtBytes(size)} round-trip ...`;
+  const data = new Uint8Array(size);
+  crypto.getRandomValues(data);
+
+  const t0 = performance.now();
+  try {
+    const results = await Promise.all(
+      Array.from({ length: parallel }, (_, i) => runBidiStream(i, data))
+    );
+    const t1 = performance.now();
+    const totalBytes = results.reduce((a, b) => a + b, 0);
+    const elapsedMs = t1 - t0;
+    const mbps = (totalBytes * 8 / 1e6) / (elapsedMs / 1000);
+    const txt = `OK: ${parallel} streams · ${fmtBytes(totalBytes)} total round-trip in ${elapsedMs.toFixed(1)} ms = ${mbps.toFixed(2)} Mbps`;
+    $('bidi-result').textContent = txt;
+    log(txt);
+  } catch (e) {
+    const txt = `FAIL: ${e.message}`;
+    $('bidi-result').textContent = txt;
+    log(txt);
+  }
+}
+
+async function datagramTest() {
+  const count = parseInt($('dg-count').value, 10);
+  const size = parseInt($('dg-size').value, 10);
+  if (size < 12) { $('dg-result').textContent = 'size must be >= 12'; return; }
+  $('dg-result').textContent = `Running: ${count} × ${size} bytes ...`;
+
+  dgPending = { received: 0, rtts: [] };
+  const writer = transport.datagrams.writable.getWriter();
+  const t0 = performance.now();
+  for (let i = 0; i < count; i++) {
+    const buf = new ArrayBuffer(size);
+    const dv = new DataView(buf);
+    dv.setUint32(0, i);
+    dv.setFloat64(4, performance.now());
+    await writer.write(new Uint8Array(buf));
+  }
+  writer.releaseLock();
+  // Allow up to 2s for echoes.
+  const deadline = performance.now() + 2000;
+  while (dgPending.received < count && performance.now() < deadline) {
+    await new Promise(r => setTimeout(r, 50));
+  }
+  const t1 = performance.now();
+  const lost = count - dgPending.received;
+  const avgRtt = dgPending.rtts.length
+    ? dgPending.rtts.reduce((a, b) => a + b, 0) / dgPending.rtts.length
+    : 0;
+  const txt = `${dgPending.received}/${count} echoed in ${(t1 - t0).toFixed(1)} ms · lost ${lost} · avg RTT ${avgRtt.toFixed(2)} ms`;
+  $('dg-result').textContent = txt;
+  log(txt);
+  dgPending = null;
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  $('ua-name').textContent = navigator.userAgent.includes('Safari') && !navigator.userAgent.includes('Chrome')
+    ? 'Safari' : navigator.userAgent.includes('Chrome') ? 'Chrome' : 'browser';
+  $('btn-connect').addEventListener('click', connect);
+  $('btn-disconnect').addEventListener('click', disconnect);
+  $('btn-bidi').addEventListener('click', bidiTest);
+  $('btn-dg').addEventListener('click', datagramTest);
+});
+</script>
+</body>
+</html>
